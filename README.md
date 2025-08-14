@@ -357,6 +357,4 @@ If using this work in research, please cite:
 - **Institution:** Trinity College Dublin, Department of Mathematics  
 ---
 
-**⭐ Star this repository if you find it useful for your edge computing or distributed systems research!**
-
 *Last Updated: August 2025*
