@@ -8,7 +8,6 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Status](https://img.shields.io/badge/Status-Complete-green.svg)
-![License](https://img.shields.io/badge/License-Academic-orange.svg)
 
 ## 🚀 Overview
 
