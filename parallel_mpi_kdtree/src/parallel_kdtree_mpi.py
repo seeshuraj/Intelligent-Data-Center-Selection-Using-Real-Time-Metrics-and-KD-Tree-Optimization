@@ -165,3 +165,7 @@ if __name__ == "__main__":
         print(f"\nNearest neighbors: indices={indices}, distances={distances}")
         avg_comm = sum(p['comm_overhead'] for p in all_profiles) / len(all_profiles)
         print(f"Communication overhead (avg across ranks): {avg_comm:.2f}%")
+<<<<<<< HEAD
+=======
+
+>>>>>>> a09b4e5 (Add MPI cluster benchmarks and fix parallel KD-tree profiling)
