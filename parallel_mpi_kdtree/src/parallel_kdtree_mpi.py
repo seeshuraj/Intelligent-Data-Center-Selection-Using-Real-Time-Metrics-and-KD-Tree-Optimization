@@ -53,7 +53,11 @@ class ParallelKDTree:
     def build_local_tree(self, local_data):
         """Build KD-Tree locally on each process."""
         start_time = time.time()
-        self.local_tree = KDTree(local_data, leaf_size=30)
+        # Handle ranks with zero local points
+        if len(local_data) > 0:
+            self.local_tree = KDTree(local_data, leaf_size=30)
+        else:
+            self.local_tree = None
         self.compute_time += time.time() - start_time
 
         if self.rank == 0:
@@ -73,14 +77,34 @@ class ParallelKDTree:
 
         On non-root ranks, returns (None, None).
         """
+        # Ensure ndarray and 2D
+        if not isinstance(query_points, np.ndarray):
+            query_points = np.array(query_points, dtype=np.float32)
+        if query_points.ndim == 1:
+            query_points = query_points.reshape(1, -1)
+
         # Broadcast query points to all processes
         start_time = time.time()
-        query_points = self.comm.bcast(query_points, root=0)
+        query_points = self.comm.bcast(query_points if self.rank == 0 else None, root=0)
         self.comm_time += time.time() - start_time
 
-        # Local search
+        n_queries = query_points.shape[0]
+
+        # Local search: k cannot be greater than local number of points
+        n_local = self.local_sizes[self.rank] if self.local_sizes is not None else 0
+        local_k = min(k, n_local)
+
         start_time = time.time()
-        local_distances, local_indices = self.local_tree.query(query_points, k=k)
+        if self.local_tree is None or local_k == 0:
+            # This rank has no candidates
+            local_distances = np.full((n_queries, 0), np.inf, dtype=np.float32)
+            local_indices = np.full((n_queries, 0), -1, dtype=np.int32)
+        else:
+            local_distances, local_indices = self.local_tree.query(query_points, k=local_k)
+            # sklearn returns 1D when local_k == 1, force 2D
+            if local_k == 1:
+                local_distances = local_distances[:, np.newaxis]
+                local_indices = local_indices[:, np.newaxis]
         self.compute_time += time.time() - start_time
 
         # Gather results to root process
@@ -89,30 +113,32 @@ class ParallelKDTree:
         all_indices = self.comm.gather(local_indices, root=0)
         self.comm_time += time.time() - start_time
 
-        if self.rank == 0:
-            global_distances = []
-            global_indices = []
+        if self.rank != 0:
+            return None, None
 
-            # For each query point, merge candidates from all ranks
-            for q in range(len(query_points)):
-                candidates = []  # (dist, global_idx)
+        # Root: merge candidates from all ranks
+        global_distances = []
+        global_indices = []
 
-                for r, (dists_r, inds_r) in enumerate(zip(all_distances, all_indices)):
-                    offset = self.prefix_offsets[r]
-                    for dist, idx in zip(dists_r[q], inds_r[q]):
-                        # Map local index on rank r to global index
-                        global_idx = offset + idx
-                        candidates.append((dist, global_idx))
+        for q in range(n_queries):
+            candidates = []  # (dist, global_idx)
 
-                # Sort and keep best k
-                candidates.sort(key=lambda x: x[0])
-                top_k = candidates[:k]
-                global_distances.append([d for d, _ in top_k])
-                global_indices.append([i for _, i in top_k])
+            for r, (dists_r, inds_r) in enumerate(zip(all_distances, all_indices)):
+                offset = self.prefix_offsets[r]
+                # dists_r[q] may be length < k if that rank had few points
+                for dist, idx in zip(dists_r[q], inds_r[q]):
+                    if idx < 0:   # skip empty placeholders
+                        continue
+                    global_idx = offset + idx
+                    candidates.append((dist, global_idx))
 
-            return np.array(global_distances), np.array(global_indices)
+            # Sort and keep best k
+            candidates.sort(key=lambda x: x[0])
+            top_k = candidates[:k]
+            global_distances.append([d for d, _ in top_k])
+            global_indices.append([i for _, i in top_k])
 
-        return None, None
+        return np.array(global_distances), np.array(global_indices)
 
     def profile_communication(self):
         """Return communication and computation profiling information for this rank."""
@@ -126,46 +152,3 @@ class ParallelKDTree:
             'comm_overhead': comm_overhead,
         }
 
-
-if __name__ == "__main__":
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-
-    # Generate sample datacenter metrics on rank 0
-    if rank == 0:
-        np.random.seed(42)
-        data = np.random.rand(1000, 4)  # 1000 datacenters, 4 metrics
-        metrics = ['latency', 'storage', 'throughput', 'geo_distance']
-        query = np.random.rand(1, 4)
-        print(f"Starting parallel KD-Tree with {size} processes...")
-        print(f"Data shape: {data.shape}, Metrics: {metrics}")
-    else:
-        data = None
-        metrics = None
-        query = None
-
-    # Broadcast shared inputs
-    data = comm.bcast(data, root=0)
-    metrics = comm.bcast(metrics, root=0)
-    query = comm.bcast(query, root=0)
-
-    # Build and query parallel KD-Tree
-    tree = ParallelKDTree(data, metrics)
-    local_data = tree.distribute_data()
-    tree.build_local_tree(local_data)
-
-    distances, indices = tree.parallel_query(query, k=5)
-
-    # Gather per-rank profiles and report average communication overhead
-    profile = tree.profile_communication()
-    all_profiles = comm.gather(profile, root=0)
-
-    if rank == 0:
-        print(f"\nNearest neighbors: indices={indices}, distances={distances}")
-        avg_comm = sum(p['comm_overhead'] for p in all_profiles) / len(all_profiles)
-        print(f"Communication overhead (avg across ranks): {avg_comm:.2f}%")
-<<<<<<< HEAD
-=======
-
->>>>>>> a09b4e5 (Add MPI cluster benchmarks and fix parallel KD-tree profiling)
